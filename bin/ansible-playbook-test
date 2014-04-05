@@ -36,7 +36,7 @@ def print_playbook_test_result(playbook, successful, verbosity, message = None):
 	pb_dirname = os.path.basename(os.path.dirname(playbook))
 
 	
-	if verbosity < 1:
+	if verbosity < 2:
 		print stringc(RESULT_MESSAGE.format(pb_dirname, pb_filename, result_string), color)
 	else:
 		print stringc('## Playbook: {0}'.format(pb_filename), color)
@@ -45,11 +45,30 @@ def print_playbook_test_result(playbook, successful, verbosity, message = None):
 		print stringc('# Succesful: {0}'.format(successful), color)
 		print
 
-def print_summary(tested, failed):
+	if not successful and verbosity > 0:
+		print stringc('# Error Message:', color)
+		for line in message.split('\n'):
+   			output_line = line.rstrip()
+   			if output_line.startswith('ERROR: '):
+   				print stringc(output_line, color)
+		print
+		print
+
+	if verbosity > 2:
+		print message
+
+
+def print_summary(tested, failed, errors):
+	color = 'yellow'
 	print
-	print "### Summary"
-	print "Tested: ", tested
-	print "Failed: ", failed
+	print stringc("### Summary", color)
+	print stringc('Tested: {0}'.format(tested), color)
+	print stringc('Passed: {0}'.format(tested - failed), color)
+	print stringc('Failed: {0}'.format(failed), color)
+	print
+
+	for entry in errors:
+		print_playbook_test_result(entry.pop(0), False, 1, entry.pop())
 
 
 def main(args):
@@ -86,22 +105,31 @@ def main(args):
 	tested = 0
 	failed = 0
 
+	cmd = [ansible_playbook_bin, '-i', inventory , "--syntax-check"]
+	if args.verbose > 2:
+		cmd.append('--list-tasks')
+
 	print 
 	print stringc('### Starting syntax check', 'yellow')
 	print 
 
+	errors = []
 	for playbook in playbooks:
 		tested += 1
+		cmd.append(playbook)
 		try:
-			pb_output = check_output([ansible_playbook_bin, '-i', inventory , "--syntax-check", playbook], stderr=STDOUT)
-			print_playbook_test_result(playbook, True, args.verbose)
+			pb_output = check_output(cmd, stderr=STDOUT)
+			print_playbook_test_result(playbook, True, args.verbose, pb_output)
 		except CalledProcessError, e:
 			return_code = 1
 			failed += 1
-			print_playbook_test_result(playbook, False, args.verbose)
+			print_playbook_test_result(playbook, False, args.verbose, e.output)
+			errors.append([playbook, e.output])
+
+		cmd.pop()
 	
 	os.remove(inventory)
-	print_summary(tested, failed)
+	print_summary(tested, failed, errors)
 
 	return return_code
 

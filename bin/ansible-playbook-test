@@ -1,0 +1,110 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import argparse
+import tempfile
+from ansible.color import stringc
+from subprocess import check_output, check_call, CalledProcessError, STDOUT
+
+VERSION = "0.1.0"
+RESULT_MESSAGE='## Dir: {0:10} Playbook: {1:30} ==> {2:20}'
+
+def create_dummy_inventory():
+	fd, tempname = tempfile.mkstemp()
+	f = os.fdopen(fd, 'wb')
+	f.write("[local]\n")
+	f.write("testhost ansible_ssh_host=127.0.0.1 ansible_connection=local\n")
+	f.close()
+	return tempname
+
+def get_playbooks_from_dir(playbooks, directory):
+	for file in os.listdir(directory):
+	    if file.endswith(".yml"):
+	        playbooks.append(os.path.join(directory, file))
+	return playbooks
+
+def print_playbook_test_result(playbook, successful, verbosity, message = None):
+	if successful:
+		color = 'green'
+		result_string = 'successful'
+	else:
+		color = 'red'
+		result_string = 'failed'
+
+	pb_filename = os.path.basename(playbook)
+	pb_dirname = os.path.basename(os.path.dirname(playbook))
+
+	
+	if verbosity < 1:
+		print stringc(RESULT_MESSAGE.format(pb_dirname, pb_filename, result_string), color)
+	else:
+		print stringc('## Playbook: {0}'.format(pb_filename), color)
+		print stringc('# Full Location: {0}'.format(playbook), color)
+		print stringc('# Parent Directory: {0}'.format(pb_dirname), color)
+		print stringc('# Succesful: {0}'.format(successful), color)
+		print
+
+def print_summary(tested, failed):
+	print
+	print "### Summary"
+	print "Tested: ", tested
+	print "Failed: ", failed
+
+
+def main(args):
+
+	parser = argparse.ArgumentParser()
+
+	parser.add_argument('playbooks',nargs='*', help='Playbook files or directories to check')
+	parser.add_argument('-A', dest='ansible_bin_dir', help='ansible bin directory', default='../../ansible/bin/')
+	parser.add_argument('-i', '--inventory', dest='INVENTORY', help='Use this inventory file instead of default version')
+	parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
+	parser.add_argument('--verbose', '-v', action='count', help='Increase log output, can be used multiple times')
+	
+	args = parser.parse_args(args)
+
+	if len(args.playbooks) == 0:
+		parser.print_help()
+		return 1
+
+	ansible_playbook_bin = os.path.join(args.ansible_bin_dir, 'ansible-playbook')
+	if not os.path.isfile(ansible_playbook_bin):
+		print 'Could not find ansible-playbook at: ', ansible_playbook_bin
+		return 1
+
+	playbooks = []
+	for entry in set(args.playbooks):
+		if os.path.isdir(entry):
+			playbooks = get_playbooks_from_dir(playbooks, entry)
+		else:
+			playbooks.append(entry)
+
+	inventory = create_dummy_inventory()
+	
+	return_code = 0
+	tested = 0
+	failed = 0
+
+	print 
+	print stringc('### Starting syntax check', 'yellow')
+	print 
+
+	for playbook in playbooks:
+		tested += 1
+		try:
+			pb_output = check_output([ansible_playbook_bin, '-i', inventory , "--syntax-check", playbook], stderr=STDOUT)
+			print_playbook_test_result(playbook, True, args.verbose)
+		except CalledProcessError, e:
+			return_code = 1
+			failed += 1
+			print_playbook_test_result(playbook, False, args.verbose)
+	
+	os.remove(inventory)
+	print_summary(tested, failed)
+
+	return return_code
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

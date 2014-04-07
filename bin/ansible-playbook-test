@@ -7,7 +7,7 @@ import tempfile
 from ansible.color import stringc
 from subprocess import check_output, check_call, CalledProcessError, STDOUT
 
-VERSION = "0.1.0"
+VERSION = "0.1.5"
 RESULT_MESSAGE='## Dir: {0:10} Playbook: {1:30} ==> {2:20}'
 
 def create_dummy_inventory():
@@ -76,7 +76,7 @@ def main(args):
 	parser = argparse.ArgumentParser()
 
 	parser.add_argument('playbooks',nargs='*', help='Playbook files or directories to check')
-	parser.add_argument('-A', dest='ansible_bin_dir', help='ansible bin directory', default='../../ansible/bin/')
+	parser.add_argument('-A', dest='ansible_bin_dir', help='ansible bin directory', default=None)
 	parser.add_argument('-i', '--inventory', dest='INVENTORY', help='Use this inventory file instead of default version')
 	parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
 	parser.add_argument('--verbose', '-v', action='count', help='Increase log output, can be used multiple times')
@@ -87,9 +87,21 @@ def main(args):
 		parser.print_help()
 		return 1
 
-	ansible_playbook_bin = os.path.join(args.ansible_bin_dir, 'ansible-playbook')
+	ansible_playbook_bin = None
+	if args.ansible_bin_dir:
+		ansible_playbook_bin = os.path.join(args.ansible_bin_dir, 'ansible-playbook')
+		if not os.path.isfile(ansible_playbook_bin):
+			print 'Could not find ansible-playbook at: ', ansible_playbook_bin
+			return 1
+	else:
+		for path in os.getenv('PATH').split(':'):
+			temp_ansible_playbook_bin = os.path.join(path, 'ansible-playbook')
+			if os.path.isfile(temp_ansible_playbook_bin):
+				ansible_playbook_bin = temp_ansible_playbook_bin
+				break
+
 	if not os.path.isfile(ansible_playbook_bin):
-		print 'Could not find ansible-playbook at: ', ansible_playbook_bin
+		print 'Could not find ansible-playbook in path'
 		return 1
 
 	playbooks = []

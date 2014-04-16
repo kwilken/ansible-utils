@@ -1,0 +1,209 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import argparse
+import tempfile
+import ansible.utils
+import shutil
+from ansible.color import stringc
+from subprocess import call, CalledProcessError, STDOUT
+
+VERSION = "0.1.0"
+
+SEPERATOR = '########################################################################################'
+OUTPUT_FORMAT_NODE = '{0} [shape={1}, label=\"{2}\"];\n'
+
+def print_line(msg, color='green', show_seperator=False):
+	if show_seperator:
+		print 
+		print stringc(SEPERATOR, color)
+
+	print stringc(msg, color)
+
+def print_info(msg, newMsg=False):
+	print_line(msg, show_seperator=newMsg)
+
+def print_error(msg, newMsg=False):
+	print_line(msg, color='red', show_seperator=newMsg)
+
+def dot_normalize(value):
+	return value.replace('.', '_').replace('-', '_')
+
+def create_dependency_map(root, structure, dot_executable, target):
+	
+	fd, tempname = tempfile.mkstemp()
+	f = os.fdopen(fd, 'wb')
+	f.write("digraph G {\n")
+
+	for item in structure:
+		f.write('{0} -> {1}'.format(dot_normalize(item[0]), dot_normalize(item[2]) ))
+		if item[1] == 'role':
+			f.write(' [style=dotted]'.format(item[2]))
+		f.write(';\n')
+
+		if item[1] == 'include':
+			f.write(OUTPUT_FORMAT_NODE.format(dot_normalize(item[0]), 'diamond' ,item[0]))
+		else:
+			f.write(OUTPUT_FORMAT_NODE.format(dot_normalize(item[0]), 'box' ,item[0]))
+
+	f.write('{ node [shape=diamond]; rank = same')
+	for root_element in root:
+		f.write('; {0}'.format(dot_normalize(root_element)))
+
+	f.write("};\n}\n")
+	f.close()
+
+	cmd = [dot_executable, '-Tpng', tempname , '-o', target]
+
+	try:
+		call(cmd, stderr=STDOUT)
+	except CalledProcessError, e:
+		return_code = 1
+		print e.output
+
+	shutil.move(tempname, target + '.dot')	
+
+
+def analyze_role(basedir, role, structure_list, parent = None, verbosity = 0):
+
+	role_main = os.path.join(basedir, 'roles/{0}/tasks/main.yml'.format(role))
+	role_data = ansible.utils.parse_yaml_from_file(role_main)
+
+	if os.path.exists(role_main):
+		#structure_list = analyze_playbook(role_main, structure_list)
+		if verbosity > 0:
+			print 
+			print SEPERATOR
+			print '# Role: ', role
+			print '# Role Main File:', role_main
+			if verbosity > 1:
+				print 'Content Dump:'
+				print
+				print ansible.utils.parse_yaml_from_file(role_main)
+
+	role_meta = os.path.join(basedir, 'roles/{0}/meta/main.yml'.format(role))
+	if os.path.exists(role_meta):
+		meta_content = ansible.utils.parse_yaml_from_file(role_meta)
+		if verbosity > 0:
+			print
+			print SEPERATOR
+			print '# Role: ', role
+			print '# Meta Main File:', role_meta
+			if verbosity > 1:
+				print 'Content Dump:'
+				print
+				print ansible.utils.parse_yaml_from_file(role_meta)
+		
+		if meta_content['dependencies'] is not None:
+			for item in meta_content['dependencies']:
+				if item.has_key('role'):
+					parant_name = role
+					structure_list.append([parant_name, 'role-dependency', item['role']])
+					structure_list = analyze_role(basedir, item['role'], structure_list)
+
+	return structure_list
+
+def analyze_playbook(playbook, structure_list, verbosity = 0):
+
+	basedir = os.path.dirname(playbook)
+	playbook_name = os.path.basename(playbook)
+
+	try:
+		pb_data = ansible.utils.parse_yaml_from_file(playbook)
+	except:
+		print 'ERROR while evaluating: ', playbook
+		return None
+
+	if verbosity > 0:
+		print 
+		print SEPERATOR
+		print '# Playbook: ', playbook_name
+		print '# Playbook file: ', playbook
+		if verbosity > 1:
+			print 'Content Dump:'
+			print
+			print pb_data
+			print 
+
+	for item in pb_data:
+		if item.has_key('include'):
+			structure_list.append([playbook_name, 'include', item['include']])
+			structure_list = analyze_playbook(os.path.join(basedir, item['include']), structure_list=structure_list)
+			if not structure_list:
+				return None
+
+		if item.has_key('roles'):
+			for role in item['roles']:
+				structure_list.append([playbook_name, 'role', role['role']])
+				structure_list = analyze_role(basedir, role['role'], structure_list, parent = playbook_name)
+
+	return structure_list
+
+
+
+def main(args):
+
+	parser = argparse.ArgumentParser()
+	parser.add_argument('-o', '--output', required=True, help='Output file to write to')
+	parser.add_argument('playbooks',nargs='*', help='Playbook files to draw the dependency map for')
+	parser.add_argument('-d', '--dot', dest='dot_executable', help='dot executable to use for map creation')
+	parser.add_argument('--verbose', '-v', action='count', help='Increase log output, can be used multiple times')
+	parser.add_argument('--version', action='version', version='%(prog)s ' + VERSION)
+
+	args = parser.parse_args(args)
+
+	if len(args.playbooks) == 0:
+		print_error('Please provide a playbook!', newMsg=True)
+		parser.print_help()
+		return 1
+
+	dot_executable = None
+	if args.dot_executable:
+		dot_executable = args.dot_executable
+		if not os.path.isfile(dot_executable):
+			print_error('Could not find dot_executable at: {0}'.format(dot_executable))
+			return 1
+	else:
+		for path in os.getenv('PATH').split(':'):
+			temp_dot_executable = os.path.join(path, 'dot')
+			if os.path.isfile(temp_dot_executable):
+				dot_executable = temp_dot_executable
+				break
+
+	if not os.path.isfile(dot_executable):
+		print_error('Could not find dot executable in path.')
+		print_error('Please make shure that dot is available in $PATH or provide specific dot installation with -d option!')
+		return 1
+
+	structure_list = []
+	structure_root = []
+
+	for playbook in set(args.playbooks):
+		
+		if not os.path.isfile(playbook):
+			print_error("ERROR: Please provide a valid playbook file", newMsg=True)
+			print_error("ERROR: Can not find playbook {0}".format(playbook))
+			print
+			parser.print_help()
+			return 1
+
+		print_info('# Playbook: {0}'.format(playbook), True)
+
+		structure_list = analyze_playbook(playbook, structure_list)
+		structure_root.append(os.path.basename(playbook))
+	
+		if not structure_list:
+			print_error('ERROR: Can not read playbook file {0} or dependencies.'.format(playbook), newMsg=True)
+			print_error('ERROR: Please verify that it is a valid ansible playbook!')
+			print
+			parser.print_help()
+			return 1
+
+	#print pb_includes
+
+	create_dependency_map(structure_root, structure_list, dot_executable, args.output)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
